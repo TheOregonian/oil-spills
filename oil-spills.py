@@ -9,9 +9,14 @@ import re;
 import geopandas;
 pd.set_option('display.max_colwidth', -1)
 
+print "Fetching Excel file."
 url = "http://www.nrc.uscg.mil/FOIAFiles/Current.xlsx"
-xl = pd.ExcelFile(url)
+try:
+	xl = pd.ExcelFile(url)
+except:
+	print "Failed to fetch Excel file."
 
+print "Parsing Excel file."
 # Parse out sheets into separate DataFrames
 calls = xl.parse("CALLS", na_values='');
 incidents = pd.read_excel(url,"INCIDENTS",dtype={'PIER_DOCK_NUMBER':str})
@@ -36,16 +41,25 @@ incident_commons = pd.merge(incident_commons,incident_details, on='SEQNOS')
 
 # Pull up our file showing the ID of the last record processed in the "Current.xls" file
 # The file just keeps getting bigger every Sunday until calendar year end.
-bookmark = pd.read_csv("bookmark")
+import os
+exists = os.path.isfile('bookmark')
+if exists:
+    bookmark = pd.read_csv("bookmark")
+    appending = True
+else:
+    appending = False
 
-# Drop all the old records that we've already processed
-incident_commons = incident_commons[incident_commons.SEQNOS > int(bookmark.top[0])]
-materials = materials[materials.SEQNOS > int(bookmark.top[0])]
-material_cr = material_cr[material_cr.SEQNOS > int(bookmark.top[0])]
-trains = trains[trains.SEQNOS > int(bookmark.top[0])]
-traincars = traincars[traincars.SEQNOS > int(bookmark.top[0])]
-vessels = vessels[vessels.SEQNOS > int(bookmark.top[0])]
-vehicles = vehicles[vehicles.SEQNOS > int(bookmark.top[0])]
+if appending:
+	# Drop all the old records that we've already processed
+	incident_commons = incident_commons[incident_commons.SEQNOS > int(bookmark.top[0])]
+	materials = materials[materials.SEQNOS > int(bookmark.top[0])]
+	material_cr = material_cr[material_cr.SEQNOS > int(bookmark.top[0])]
+	trains = trains[trains.SEQNOS > int(bookmark.top[0])]
+	traincars = traincars[traincars.SEQNOS > int(bookmark.top[0])]
+	vessels = vessels[vessels.SEQNOS > int(bookmark.top[0])]
+	vehicles = vehicles[vehicles.SEQNOS > int(bookmark.top[0])]
+
+print "Writing out files."
 
 # Export many-to-one tables as separate files for import
 materials.to_csv('materials' + now + '.csv')
@@ -54,6 +68,8 @@ trains.to_csv('trains' + now + '.csv')
 traincars.to_csv('traincars' + now + '.csv')
 vessels.to_csv('vessels' + now + '.csv')
 vehicles.to_csv('vehicles' + now + '.csv')
+
+print "Processing coordinates."
 
 # Use full coordinates if available
 incident_commons['new_latitude']  = incident_commons.LAT_DEG + (incident_commons.LAT_MIN / 60) + (incident_commons.LAT_SEC / 3600)
@@ -94,14 +110,15 @@ def splitclean(latitude):
     else:
         degrees = float(components[0])
     if len(components) > 1:
-        minutes = float(components[1]) / 60
-        if len(components) == 3:
-            seconds = float(components[2]) / 3600
-            minutes = minutes + seconds
-        if degrees > 0:
-            degrees = degrees + minutes
-        else:
-            degrees = degrees - minutes
+        if isinstance(components[1],float):
+        	minutes = float(components[1]) / 60
+        	if len(components) == 3:
+        		seconds = float(components[2]) / 3600
+        		minutes = minutes + seconds
+        	if degrees > 0:
+        		degrees = degrees + minutes
+        	else:
+        		degrees = degrees - minutes
     return degrees
 
 
@@ -285,19 +302,47 @@ incident_commons.loc[has_street,'new_street'] = incident_commons.LOCATION_STREET
 has_street = (incident_commons.INCIDENT_LOCATION.apply(findstreet) == True) & (incident_commons.new_street.isnull())
 incident_commons.loc[has_street,'new_street'] = incident_commons.INCIDENT_LOCATION
 
+print "Starting geocoder."
 # Create geodataframe for geocoding
 geo = geopandas.GeoDataFrame(incident_commons)
 counter = 0
 from geopy.geocoders import Bing
-bingkey = "AuNPKK6wEhtJOp2JSz1iQQwqgCptimUiyamkP18Bnz4ycjMaxcFdd1kYEqyWrdxL"
+
+def get_apikey(servicename):
+	import pandas as pd
+	import os
+	if os.path.isfile('/etc/apikeys'):
+		path = '/etc/apikeys'
+	else:
+		if os.path.isfile('apikeys'):
+			path = 'apikeys'
+		else:
+			return False
+	keyfile = pd.read_csv(path)
+	keydict = keyfile.to_dict('records')
+	for row in keydict:
+		if row['service'] == servicename:
+			apikey = row['key']
+			return apikey
+
+bingkey = get_apikey('bing')
+if bingkey == False:
+	print "Could not find necessary API key file."
+	quit()
+	
+#bingkey = "AuNPKK6wEhtJOp2JSz1iQQwqgCptimUiyamkP18Bnz4ycjMaxcFdd1kYEqyWrdxL"
 
 # Compile an address string for submission to geocoder, then submit request
+
 for row in geo.itertuples():
     counter+=1
+    print counter
     # Skip this record for geocoding if latitude is already populated
     if not math.isnan(row.new_latitude):
+    	print "Latitude already there."
         continue
     # Compile the address using available street/city/county/state fields
+    print "Compiling address"
     address = ''
     if not isinstance(row.LOCATION_STATE,float):
         address = str(row.LOCATION_STATE)
@@ -316,6 +361,7 @@ for row in geo.itertuples():
     print str(counter) + ' ' + address
     # Geocode the address
     try:
+    	print "Geocoded one address."
         location = geopandas.tools.geocode(address,provider="Bing",api_key=bingkey)
         location['SEQNOS'] = row.SEQNOS
         if counter == 1:
@@ -323,7 +369,13 @@ for row in geo.itertuples():
         else:
             locations = locations.append(location)
     except:
+    	print "Geocoder failed."
         continue
+    if counter > 10:
+    	break
+
+print 'Preparing to merge'
+
 geo = geo.merge(locations,how='left',on='SEQNOS')
 
 # Create a text file noting record ID of where we left off with the last import of data.
@@ -349,9 +401,17 @@ null_coordinates = geo.geometry.isnull()
 # Update the geometry with data from the latitude and longitude coordinates
 geo.loc[null_coordinates,'geometry'] = points
 
+# DEPRECATED -- dump to geojson
 # Output everything as a text file for use elswhere
-jsonfile = 'spillcalls' + now + '.geojson'
+#jsonfile = 'spillcalls' + now + '.geojson'
+#geo.to_file(jsonfile, driver='GeoJSON')
 
-geo.to_file(jsonfile, driver='GeoJSON')
+# Redo geodataframe as a regular dataframe
+export = pd.DataFrame(geo)
+# Export bulk file or update file
+if appending:
+	export.to_csv('latest_spillcalls.csv',encoding='utf-8')
+else:
+	export.to_csv('spillcalls-all.csv',encoding='utf-8')
 
 # Finished
