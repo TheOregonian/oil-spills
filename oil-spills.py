@@ -10,7 +10,7 @@ import geopandas;
 pd.set_option('display.max_colwidth', -1)
 
 print "Fetching Excel file."
-url = "http://www.nrc.uscg.mil/FOIAFiles/Current.xlsx"
+url = "http://nrc.uscg.mil/FOIAFiles/Current.xlsx"
 try:
 	xl = pd.ExcelFile(url)
 except:
@@ -41,6 +41,11 @@ incident_commons = pd.merge(incident_commons,incident_details, on='SEQNOS')
 
 # Pull up our file showing the ID of the last record processed in the "Current.xls" file
 # The file just keeps getting bigger every Sunday until calendar year end.
+# --------------------------------------------------------------------------
+# NOTE!!!!! If you are running this the first time, you want to delete the file
+# called "bookmark" from your folder
+# --------------------------------------------------------------------------
+
 import os
 exists = os.path.isfile('bookmark')
 if exists:
@@ -361,16 +366,18 @@ for row in geo.itertuples():
     print str(counter) + ' ' + address
     # Geocode the address
     try:
-    	print "Geocoded one address."
         location = geopandas.tools.geocode(address,provider="Bing",api_key=bingkey)
         location['SEQNOS'] = row.SEQNOS
         if counter == 1:
             locations = geopandas.GeoDataFrame(location)
         else:
             locations = locations.append(location)
+    	print "Geocoded one address."
+    	print location
     except:
     	print "Geocoder failed."
         continue
+
     if counter > 10:
     	break
 
